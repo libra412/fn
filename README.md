@@ -1,0 +1,2 @@
+# fn
+go faas demo
