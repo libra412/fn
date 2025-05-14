@@ -22,7 +22,7 @@ import (
 )
 
 // 定义函数处理类型
-type Handler = func(context.Context, map[string][]string, []byte) ([]byte, error)
+type Handler = func(context.Context, *log.Logger, map[string][]string, []byte) ([]byte, error)
 
 var logger = log.New(os.Stdout, "", log.LstdFlags|log.Llongfile)
 
@@ -65,7 +65,7 @@ func handleInvoke(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	begin := time.Now()
-	output, err := handler(ctx, r.Header, input)
+	output, err := handler(ctx, logger, r.Header, input)
 	defer func() {
 		logger.Printf("Function %s executed in %s, request=%s, response=%s, err=%v", fnName, time.Since(begin), string(input), string(output), err)
 	}()
@@ -98,6 +98,10 @@ func init() {
 func main() {
 	flag.Parse()
 
+	// 确保插件目录存在
+	if err := os.MkdirAll(plugins, 0755); err != nil {
+		logger.Fatal(err)
+	}
 	// 初始化加载已有插件
 	initPlugins(plugins)
 	// 启动插件监视器（后台运行）
