@@ -21,16 +21,16 @@ func newRouter() *router {
 // InitRouter initializes the router with the provided list of register functions.
 func InitRouter(list ...register) {
 	for _, reg := range list {
-		reg.registerEndpoint(RegisterHandler)
+		reg.RegisterEndpoint(registerHandler)
 	}
 }
 
 type register interface {
-	registerEndpoint(func(string, endpoint.Endpoint))
+	RegisterEndpoint(func(string, endpoint.Endpoint))
 }
 
 // 注册路由
-func RegisterHandler(method string, endpoint endpoint.Endpoint) {
+func registerHandler(method string, endpoint endpoint.Endpoint) {
 	newRouter().registerEndpoint(method, endpoint)
 }
 
