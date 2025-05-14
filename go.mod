@@ -1,4 +1,4 @@
-module fn
+module github.com/libra412/fn
 
 go 1.23.4
 

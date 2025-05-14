@@ -115,6 +115,7 @@ func main() {
 
 func loadPlugin(path string, functionName string) error {
 	p, err := plugin.Open(path)
+	logger.Printf("Loading plugin: %v", p)
 	if err != nil {
 		return err
 	}
