@@ -1,38 +1,50 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"errors"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"plugin"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
 )
 
-// 定义函数处理类型
-type Handler = func(context.Context, *log.Logger, map[string][]string, []byte) ([]byte, error)
+// 定义数据类型
+type InvocationEvent struct {
+	// 元数据
+	Headers   map[string]string `json:"headers"`   // 所有请求头
+	Method    string            `json:"method"`    // GET/POST/PUT等
+	Path      string            `json:"path"`      // 请求路径
+	Query     map[string]string `json:"query"`     // 查询参数
+	RequestID string            `json:"requestId"` // 请求ID
+
+	// 内容
+	Body     []byte `json:"body"`     // 原始请求体
+	IsBase64 bool   `json:"isBase64"` // 二进制标识
+}
 
 var logger = log.New(os.Stdout, "", log.LstdFlags|log.Llongfile)
 
 var (
-	functions = make(map[string]Handler) // 存储注册的函数
-	mu        sync.RWMutex               // 保护 functions 的并发安全
+	functions = make(map[string]string) // 存储注册的函数
+	mu        sync.RWMutex              // 保护 functions 的并发安全
 )
 
 // 注册函数（线程安全）
-func registerFunction(name string, h Handler) {
+func registerFunction(name string, h string) {
 	mu.Lock()
 	defer mu.Unlock()
 	functions[name] = h
@@ -46,28 +58,58 @@ func unregisterFunction(name string) {
 }
 
 // 处理HTTP请求
+func invokeFunc(ctx context.Context, handleName string, input []byte) ([]byte, error) {
+
+	cmd := exec.CommandContext(ctx, fmt.Sprintf("./%s", handleName))
+
+	// 设置输入输出
+	var stdout, stderr bytes.Buffer
+	cmd.Stdin = bytes.NewReader(input)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		return nil, fmt.Errorf("error running func1: %v, stderr: %s", err, stderr.String())
+	}
+	return stdout.Bytes(), nil
+}
+
 func handleInvoke(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	fnName := vars["functionName"]
-	handler, exists := functions[fnName]
+	handleName, exists := functions[fnName]
 	if !exists {
 		http.Error(w, "Function not found", http.StatusNotFound)
+		logger.Printf("Functions have %+v", functions)
 		return
 	}
 
-	input, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Error reading request body", http.StatusBadRequest)
 		return
 	}
+	// 构建事件对象
+	event := InvocationEvent{
+		Headers:   headerToMap(r.Header),
+		Method:    r.Method,
+		Path:      r.URL.Path,
+		Query:     queryToMap(r.URL.Query()),
+		Body:      body,
+		IsBase64:  isBinaryData(r.Header.Get("Content-Type")),
+		RequestID: generateRequestID(),
+	}
+
+	// 序列化事件
+	eventBytes, _ := json.Marshal(event)
 
 	// 设置超时上下文
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	begin := time.Now()
-	output, err := handler(ctx, logger, r.Header, input)
+	output, err := invokeFunc(ctx, handleName, eventBytes)
 	defer func() {
-		logger.Printf("Function %s executed in %s, request=%s, response=%s, err=%v", fnName, time.Since(begin), string(input), string(output), err)
+		logger.Printf("Function %s executed in %s, request=%s, response=%s, err=%v", fnName, time.Since(begin), string(eventBytes), string(output), err)
 	}()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -81,14 +123,47 @@ func handleInvoke(w http.ResponseWriter, r *http.Request) {
 	w.Write(output)
 }
 
+func generateRequestID() string {
+	// 生成一个简单的请求ID，可以使用UUID或其他方法
+	return fmt.Sprintf("%d", uuid.New().ID())
+}
+
+// 主程序检测二进制内容
+func isBinaryData(contentType string) bool {
+	return !strings.Contains(contentType, "text/") &&
+		!strings.Contains(contentType, "application/json")
+}
+
+// 请求头转map (处理多值)
+func headerToMap(h http.Header) map[string]string {
+	m := make(map[string]string)
+	for k, v := range h {
+		if len(v) > 0 {
+			m[k] = v[0]
+		}
+	}
+	return m
+}
+
+// 查询参数转map (处理多值)
+func queryToMap(params url.Values) map[string]string {
+	m := make(map[string]string)
+	for k, v := range params {
+		if len(v) > 0 {
+			m[k] = v[0]
+		}
+	}
+	return m
+}
+
 var (
 	port    int
-	plugins string
+	funcDir string
 )
 
 func init() {
 	flag.IntVar(&port, "port", 8080, "Port to listen on")
-	flag.StringVar(&plugins, "plugins", "plugins", "Directory to watch for plugins")
+	flag.StringVar(&funcDir, "funcDir", "functions", "Directory to watch for functions")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [options]\n", flag.CommandLine.Name())
 		flag.PrintDefaults()
@@ -99,13 +174,13 @@ func main() {
 	flag.Parse()
 
 	// 确保插件目录存在
-	if err := os.MkdirAll(plugins, 0755); err != nil {
+	if err := os.MkdirAll(funcDir, 0755); err != nil {
 		logger.Fatal(err)
 	}
 	// 初始化加载已有插件
-	initPlugins(plugins)
+	initFunctions(funcDir)
 	// 启动插件监视器（后台运行）
-	go watchPlugins(plugins)
+	go watchPlugins(funcDir)
 
 	// 启动服务器
 	r := mux.NewRouter()
@@ -113,42 +188,18 @@ func main() {
 	logger.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), r))
 }
 
-func loadPlugin(path string, functionName string) error {
-	p, err := plugin.Open(path)
-	logger.Printf("Loading plugin: %v", p)
-	if err != nil {
-		return err
-	}
-	symbolName := "Handler" + cases.Title(language.Und).String(functionName)
-	sym, err := p.Lookup(symbolName)
-	if err != nil {
-		return err
-	}
-	handler, ok := sym.(Handler)
-	if !ok {
-		return errors.New("invalid handler type")
-	}
-	registerFunction(functionName, handler)
-	logger.Printf("Loaded plugin: %s -> %s", path, functionName)
-	return nil
-}
-
 // 初始化时加载已有插件
-func initPlugins(pluginDir string) {
+func initFunctions(pluginDir string) {
 	files, err := os.ReadDir(pluginDir)
 	if err != nil {
 		logger.Fatalf("Failed to read plugin directory: %v", err)
 	}
 
 	for _, f := range files {
-		if strings.HasSuffix(f.Name(), ".so") {
-			// 假设插件文件名为函数名（例如 echo.so -> 函数名 "echo"）
-			functionName := strings.TrimSuffix(f.Name(), ".so")
-			path := filepath.Join(pluginDir, f.Name())
-			if err := loadPlugin(path, functionName); err != nil {
-				logger.Printf("Failed to load plugin %s: %v", path, err)
-			}
-		}
+		functionName := f.Name()
+		path := filepath.Join(pluginDir, f.Name())
+		registerFunction(functionName, path)
+		logger.Printf("registered Function : %s", functionName)
 	}
 }
 
@@ -165,7 +216,7 @@ func watchPlugins(pluginDir string) {
 		logger.Fatalf("Failed to watch directory %s: %v", pluginDir, err)
 	}
 
-	logger.Printf("Watching plugin directory: %s", pluginDir)
+	logger.Printf("Watching functions directory: %s", pluginDir)
 
 	// 处理事件（延迟合并重复事件）
 	var (
@@ -204,21 +255,15 @@ func watchPlugins(pluginDir string) {
 // 处理插件文件事件
 func handlePluginEvent(event fsnotify.Event) {
 	fileName := filepath.Base(event.Name)
-	if !strings.HasSuffix(fileName, ".so") {
-		return
-	}
-
-	functionName := strings.TrimSuffix(fileName, ".so")
+	functionName := fileName
 
 	switch event.Op {
 	case fsnotify.Create:
-		// 新插件加载
-		if err := loadPlugin(event.Name, functionName); err != nil {
-			logger.Printf("Failed to load new plugin %s: %v", event.Name, err)
-		}
-
+		// 新加载函数
+		registerFunction(functionName, event.Name)
+		logger.Printf("registered Function : %s", functionName)
 	case fsnotify.Remove:
-		// 移除插件（Go 无法真正卸载插件，但可以删除注册的函数）
+		// 移除函数
 		unregisterFunction(functionName)
 		logger.Printf("Unregistered function: %s", functionName)
 	}
