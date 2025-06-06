@@ -69,7 +69,7 @@ func invokeFunc(ctx context.Context, handleName string, input []byte) ([]byte, e
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if err != nil {
-		return nil, fmt.Errorf("error running func1: %v, stderr: %s", err, stderr.String())
+		return nil, fmt.Errorf("error running %s: %v, stderr: %s", handleName, err, stderr.String())
 	}
 	return stdout.Bytes(), nil
 }
