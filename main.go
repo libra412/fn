@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -135,6 +136,7 @@ func queryToMap(params url.Values) map[string]string {
 var (
 	port    int
 	funcDir string
+	listen  string
 )
 
 func init() {
@@ -143,6 +145,20 @@ func init() {
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [options]\n", flag.CommandLine.Name())
 		flag.PrintDefaults()
+	}
+
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		logger.Panicf("get service ip address err:%v", err)
+	}
+	for _, address := range addrs {
+		// 检查ip地址判断是否回环地址
+		if inet, ok := address.(*net.IPNet); ok && !inet.IP.IsLoopback() {
+			if inet.IP.To4() != nil {
+				listen = inet.IP.To4().String()
+				break
+			}
+		}
 	}
 }
 
@@ -161,6 +177,7 @@ func main() {
 	// 启动服务器
 	r := mux.NewRouter()
 	r.HandleFunc("/invoke/{functionName}", handleInvoke).Methods("POST")
+	logger.Println("Http Server start at ", fmt.Sprintf("%s:%d", listen, port))
 	logger.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), r))
 }
 
