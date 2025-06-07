@@ -20,21 +20,8 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/libra412/fn/functions/request"
 )
-
-// 定义数据类型
-type InvocationEvent struct {
-	// 元数据
-	Headers   map[string]string `json:"headers"`   // 所有请求头
-	Method    string            `json:"method"`    // GET/POST/PUT等
-	Path      string            `json:"path"`      // 请求路径
-	Query     map[string]string `json:"query"`     // 查询参数
-	RequestID string            `json:"requestId"` // 请求ID
-
-	// 内容
-	Body     []byte `json:"body"`     // 原始请求体
-	IsBase64 bool   `json:"isBase64"` // 二进制标识
-}
 
 var logger = log.New(os.Stdout, "", log.LstdFlags|log.Llongfile)
 
@@ -90,8 +77,8 @@ func handleInvoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 构建事件对象
-	event := InvocationEvent{
-		Headers:   headerToMap(r.Header),
+	event := request.InvocationEvent{
+		Headers:   r.Header,
 		Method:    r.Method,
 		Path:      r.URL.Path,
 		Query:     queryToMap(r.URL.Query()),
@@ -134,17 +121,6 @@ func isBinaryData(contentType string) bool {
 		!strings.Contains(contentType, "application/json")
 }
 
-// 请求头转map (处理多值)
-func headerToMap(h http.Header) map[string]string {
-	m := make(map[string]string)
-	for k, v := range h {
-		if len(v) > 0 {
-			m[k] = v[0]
-		}
-	}
-	return m
-}
-
 // 查询参数转map (处理多值)
 func queryToMap(params url.Values) map[string]string {
 	m := make(map[string]string)
@@ -177,10 +153,10 @@ func main() {
 	if err := os.MkdirAll(funcDir, 0755); err != nil {
 		logger.Fatal(err)
 	}
-	// 初始化加载已有插件
+	// 初始化加载已有函数
 	initFunctions(funcDir)
 	// 启动插件监视器（后台运行）
-	go watchPlugins(funcDir)
+	go watchFunctions(funcDir)
 
 	// 启动服务器
 	r := mux.NewRouter()
@@ -189,22 +165,26 @@ func main() {
 }
 
 // 初始化时加载已有插件
-func initFunctions(pluginDir string) {
-	files, err := os.ReadDir(pluginDir)
+func initFunctions(funcDir string) {
+	files, err := os.ReadDir(funcDir)
 	if err != nil {
 		logger.Fatalf("Failed to read plugin directory: %v", err)
 	}
 
 	for _, f := range files {
+		// 只处理可执行文件
+		if f.IsDir() || strings.HasSuffix(f.Name(), ".go") {
+			continue
+		}
 		functionName := f.Name()
-		path := filepath.Join(pluginDir, f.Name())
+		path := filepath.Join(funcDir, f.Name())
 		registerFunction(functionName, path)
 		logger.Printf("registered Function : %s", functionName)
 	}
 }
 
 // 动态监控插件目录
-func watchPlugins(pluginDir string) {
+func watchFunctions(funcDir string) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		logger.Fatalf("Failed to create watcher: %v", err)
@@ -212,11 +192,11 @@ func watchPlugins(pluginDir string) {
 	defer watcher.Close()
 
 	// 添加监控目录
-	if err := watcher.Add(pluginDir); err != nil {
-		logger.Fatalf("Failed to watch directory %s: %v", pluginDir, err)
+	if err := watcher.Add(funcDir); err != nil {
+		logger.Fatalf("Failed to watch directory %s: %v", funcDir, err)
 	}
 
-	logger.Printf("Watching functions directory: %s", pluginDir)
+	logger.Printf("Watching functions directory: %s", funcDir)
 
 	// 处理事件（延迟合并重复事件）
 	var (
@@ -240,7 +220,7 @@ func watchPlugins(pluginDir string) {
 				debounceTimer.Stop()
 			}
 			debounceTimer = time.AfterFunc(debounceDuration, func() {
-				handlePluginEvent(event)
+				handleFunctionsEvent(event)
 			})
 
 		case err, ok := <-watcher.Errors:
@@ -253,9 +233,15 @@ func watchPlugins(pluginDir string) {
 }
 
 // 处理插件文件事件
-func handlePluginEvent(event fsnotify.Event) {
+func handleFunctionsEvent(event fsnotify.Event) {
 	fileName := filepath.Base(event.Name)
 	functionName := fileName
+	// 判断是文件夹还是文件
+	info, err := os.Stat(event.Name)
+	if err == nil && info.IsDir() || strings.HasSuffix(fileName, ".go") {
+		logger.Printf("Ignoring directory event: %s", event.Name)
+		return
+	}
 
 	switch event.Op {
 	case fsnotify.Create:
