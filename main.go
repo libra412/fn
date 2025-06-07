@@ -58,6 +58,12 @@ func invokeFunc(ctx context.Context, handleName string, input []byte) ([]byte, e
 	err := cmd.Run()
 	if err != nil {
 		return nil, fmt.Errorf("error running %s: %v, stderr: %s", handleName, err, stderr.String())
+	} else {
+		if stderr.Len() > 0 {
+			logger.Printf("exec %s Function's log begin\n\n", handleName)
+			logger.Printf("%s\n", stderr.String())
+			logger.Printf("exec %s Function's log end\n", handleName)
+		}
 	}
 	return stdout.Bytes(), nil
 }
