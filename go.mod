@@ -1,4 +1,4 @@
-module github.com/libra412/fn
+module github.com/libra412/fn/v2
 
 go 1.23.4
 
