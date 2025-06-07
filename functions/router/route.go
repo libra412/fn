@@ -5,8 +5,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/libra412/fn/functions/logger"
-	"github.com/libra412/fn/functions/request"
+	"github.com/libra412/fn/v2/functions/logger"
+	"github.com/libra412/fn/v2/functions/request"
 )
 
 type Router func(logger *log.Logger, query map[string]string, headers http.Header, body []byte) (any, error)

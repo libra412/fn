@@ -10,8 +10,8 @@ import (
 	"os"
 	"reflect"
 
-	"github.com/libra412/fn/functions/request"
-	"github.com/libra412/fn/functions/router"
+	"github.com/libra412/fn/v2/functions/request"
+	"github.com/libra412/fn/v2/functions/router"
 )
 
 func ExecuteFunction(route router.Router) {

@@ -21,7 +21,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
-	"github.com/libra412/fn/functions/request"
+	"github.com/libra412/fn/v2/functions/request"
 )
 
 var logger = log.New(os.Stdout, "", log.LstdFlags|log.Llongfile)
